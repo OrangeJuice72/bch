@@ -3,19 +3,775 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Forest Fling</title>
-  <link rel="stylesheet" href="style.css" />
+  <title>Critter Catapult</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      font-family: Arial, sans-serif;
+      background: #bfe3ff;
+    }
+
+    #ui {
+      position: absolute;
+      top: 14px;
+      left: 14px;
+      z-index: 20;
+      background: rgba(255,255,255,0.92);
+      padding: 12px 14px;
+      border-radius: 12px;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+      min-width: 220px;
+    }
+
+    #title {
+      font-size: 24px;
+      font-weight: bold;
+      margin-bottom: 8px;
+    }
+
+    #status, #score, #shots {
+      margin: 4px 0;
+      font-size: 15px;
+    }
+
+    #buttons {
+      margin-top: 10px;
+      display: flex;
+      gap: 8px;
+    }
+
+    button {
+      border: none;
+      border-radius: 10px;
+      padding: 9px 12px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    canvas {
+      display: block;
+    }
+  </style>
 </head>
 <body>
   <div id="ui">
-    <h1>Forest Fling</h1>
-    <div id="status">Destroy all junk-bots!</div>
-    <button id="resetBtn">Reset Level</button>
+    <div id="title">Critter Catapult</div>
+    <div id="status">Destroy all scrap-bots!</div>
+    <div id="score">Score: 0</div>
+    <div id="shots">Shots Left: 3</div>
+    <div id="buttons">
+      <button id="resetBtn">Reset</button>
+    </div>
   </div>
 
-  <canvas id="gameCanvas"></canvas>
+  <canvas id="game"></canvas>
 
-  <script src="https://cdn.jsdelivr.net/npm/matter-js@0.20.0/build/matter.min.js"></script>
-  <script src="game.js"></script>
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    let W = window.innerWidth;
+    let H = window.innerHeight;
+    canvas.width = W;
+    canvas.height = H;
+
+    const uiStatus = document.getElementById("status");
+    const uiScore = document.getElementById("score");
+    const uiShots = document.getElementById("shots");
+    const resetBtn = document.getElementById("resetBtn");
+
+    const gravity = 0.42;
+    const groundY = H - 90;
+
+    const sling = {
+      x: 170,
+      y: groundY - 10,
+      maxStretch: 95
+    };
+
+    let score = 0;
+    let shotsLeft = 3;
+    let gameOver = false;
+    let dragging = false;
+    let activeBird = null;
+    let birds = [];
+    let blocks = [];
+    let enemies = [];
+    let particles = [];
+    let mouse = { x: 0, y: 0, down: false };
+
+    function resetGame() {
+      score = 0;
+      shotsLeft = 3;
+      gameOver = false;
+      dragging = false;
+      activeBird = null;
+      birds = [];
+      blocks = [];
+      enemies = [];
+      particles = [];
+
+      buildLevel();
+      spawnBird();
+
+      updateUI();
+      uiStatus.textContent = "Destroy all scrap-bots!";
+    }
+
+    function updateUI() {
+      uiScore.textContent = "Score: " + score;
+      uiShots.textContent = "Shots Left: " + shotsLeft;
+    }
+
+    function spawnBird() {
+      if (shotsLeft <= 0 || gameOver) return;
+      activeBird = {
+        x: sling.x,
+        y: sling.y,
+        vx: 0,
+        vy: 0,
+        r: 20,
+        launched: false,
+        settled: false,
+        trail: []
+      };
+      birds.push(activeBird);
+    }
+
+    function buildLevel() {
+      // Ground blocks
+      addBlock(860, groundY - 10, 160, 20, "wood");
+      addBlock(1020, groundY - 10, 160, 20, "wood");
+
+      // First supports
+      addBlock(820, groundY - 85, 26, 130, "wood");
+      addBlock(900, groundY - 85, 26, 130, "wood");
+      addBlock(980, groundY - 85, 26, 130, "glass");
+      addBlock(1060, groundY - 85, 26, 130, "glass");
+
+      // Mid beams
+      addBlock(860, groundY - 160, 120, 20, "stone");
+      addBlock(1020, groundY - 160, 120, 20, "stone");
+
+      // Upper stage
+      addBlock(940, groundY - 245, 210, 20, "wood");
+      addBlock(900, groundY - 315, 26, 120, "glass");
+      addBlock(980, groundY - 315, 26, 120, "glass");
+      addBlock(940, groundY - 390, 120, 20, "stone");
+
+      // Extra unstable side pieces
+      addBlock(1095, groundY - 235, 70, 20, "wood");
+      addBlock(1118, groundY - 285, 22, 80, "wood");
+
+      // Enemies
+      addEnemy(860, groundY - 195);
+      addEnemy(1020, groundY - 195);
+      addEnemy(940, groundY - 430);
+    }
+
+    function addBlock(x, y, w, h, type) {
+      const map = {
+        wood:  { hp: 50, color: "#9b6b3f" },
+        glass: { hp: 22, color: "#9edfff" },
+        stone: { hp: 90, color: "#8c8f96" }
+      };
+
+      blocks.push({
+        x, y, w, h, type,
+        hp: map[type].hp,
+        color: map[type].color,
+        vx: 0,
+        vy: 0,
+        angle: 0,
+        angularVel: 0,
+        falling: false,
+        dead: false
+      });
+    }
+
+    function addEnemy(x, y) {
+      enemies.push({
+        x, y,
+        r: 21,
+        hp: 60,
+        vx: 0,
+        vy: 0,
+        dead: false,
+        blink: Math.random() * 100
+      });
+    }
+
+    function dist(ax, ay, bx, by) {
+      return Math.hypot(ax - bx, ay - by);
+    }
+
+    function clampBirdToSling(px, py) {
+      const dx = px - sling.x;
+      const dy = py - sling.y;
+      const d = Math.hypot(dx, dy);
+
+      if (d <= sling.maxStretch) {
+        return { x: px, y: py };
+      }
+
+      const k = sling.maxStretch / d;
+      return {
+        x: sling.x + dx * k,
+        y: sling.y + dy * k
+      };
+    }
+
+    function launchBird() {
+      if (!activeBird || activeBird.launched) return;
+
+      const dx = sling.x - activeBird.x;
+      const dy = sling.y - activeBird.y;
+
+      activeBird.vx = dx * 0.18;
+      activeBird.vy = dy * 0.18;
+      activeBird.launched = true;
+      shotsLeft--;
+      updateUI();
+    }
+
+    function circleRectHit(c, r) {
+      const testX = Math.max(r.x - r.w / 2, Math.min(c.x, r.x + r.w / 2));
+      const testY = Math.max(r.y - r.h / 2, Math.min(c.y, r.y + r.h / 2));
+      const dx = c.x - testX;
+      const dy = c.y - testY;
+      return (dx * dx + dy * dy) <= c.r * c.r;
+    }
+
+    function damageBlock(block, dmg) {
+      block.hp -= dmg;
+      if (block.hp <= 0 && !block.dead) {
+        block.dead = true;
+        score += 120;
+        burst(block.x, block.y, 10, block.color);
+      }
+    }
+
+    function damageEnemy(enemy, dmg) {
+      enemy.hp -= dmg;
+      if (enemy.hp <= 0 && !enemy.dead) {
+        enemy.dead = true;
+        score += 500;
+        burst(enemy.x, enemy.y, 16, "#7aff93");
+      }
+    }
+
+    function burst(x, y, count, color) {
+      for (let i = 0; i < count; i++) {
+        particles.push({
+          x, y,
+          vx: (Math.random() - 0.5) * 7,
+          vy: (Math.random() - 0.5) * 7,
+          life: 30 + Math.random() * 20,
+          color
+        });
+      }
+    }
+
+    function updateBirds() {
+      for (const bird of birds) {
+        if (!bird.launched) continue;
+
+        bird.vy += gravity;
+        bird.x += bird.vx;
+        bird.y += bird.vy;
+
+        bird.trail.push({ x: bird.x, y: bird.y });
+        if (bird.trail.length > 18) bird.trail.shift();
+
+        // ground
+        if (bird.y + bird.r > groundY) {
+          bird.y = groundY - bird.r;
+          bird.vy *= -0.28;
+          bird.vx *= 0.82;
+        }
+
+        // walls
+        if (bird.x - bird.r < 0) {
+          bird.x = bird.r;
+          bird.vx *= -0.4;
+        }
+        if (bird.x + bird.r > W) {
+          bird.x = W - bird.r;
+          bird.vx *= -0.4;
+        }
+
+        // hit blocks
+        for (const block of blocks) {
+          if (block.dead) continue;
+          if (circleRectHit(bird, block)) {
+            const speed = Math.hypot(bird.vx, bird.vy);
+            damageBlock(block, speed * 8);
+
+            const push = Math.max(2, speed * 0.18);
+            block.vx += bird.vx * 0.08;
+            block.vy += bird.vy * 0.04;
+            block.angularVel += (Math.random() - 0.5) * 0.08;
+
+            bird.vx *= 0.72;
+            bird.vy *= 0.72;
+            score += 15;
+          }
+        }
+
+        // hit enemies
+        for (const enemy of enemies) {
+          if (enemy.dead) continue;
+          const d = dist(bird.x, bird.y, enemy.x, enemy.y);
+          if (d < bird.r + enemy.r) {
+            const speed = Math.hypot(bird.vx, bird.vy);
+            damageEnemy(enemy, speed * 12);
+            enemy.vx += bird.vx * 0.16;
+            enemy.vy += bird.vy * 0.08;
+            bird.vx *= 0.7;
+            bird.vy *= 0.7;
+            score += 40;
+          }
+        }
+
+        const speed = Math.hypot(bird.vx, bird.vy);
+        if (bird.launched && speed < 0.45 && bird.y >= groundY - bird.r - 2) {
+          bird.settled = true;
+        }
+      }
+
+      if (
+        activeBird &&
+        activeBird.launched &&
+        activeBird.settled &&
+        !gameOver &&
+        enemies.some(e => !e.dead) &&
+        shotsLeft > 0
+      ) {
+        spawnBird();
+      }
+    }
+
+    function updateBlocks() {
+      for (const b of blocks) {
+        if (b.dead) continue;
+
+        b.vy += gravity;
+        b.x += b.vx;
+        b.y += b.vy;
+        b.angle += b.angularVel;
+
+        b.vx *= 0.992;
+        b.angularVel *= 0.992;
+
+        if (b.y + b.h / 2 > groundY) {
+          b.y = groundY - b.h / 2;
+          b.vy *= -0.15;
+          b.vx *= 0.94;
+        }
+
+        // collapse if heavily damaged
+        if (b.hp < 18) {
+          b.vx += (Math.random() - 0.5) * 0.4;
+          b.angularVel += (Math.random() - 0.5) * 0.01;
+        }
+      }
+
+      // crude block-block support removal
+      for (const b of blocks) {
+        if (b.dead) continue;
+        let supported = false;
+
+        if (Math.abs((b.y + b.h / 2) - groundY) < 3) {
+          supported = true;
+        } else {
+          for (const other of blocks) {
+            if (other === b || other.dead) continue;
+            const top = other.y - other.h / 2;
+            const bottom = b.y + b.h / 2;
+            const horizontalOverlap =
+              Math.abs(b.x - other.x) < (b.w + other.w) * 0.35;
+
+            if (Math.abs(bottom - top) < 10 && horizontalOverlap) {
+              supported = true;
+              break;
+            }
+          }
+        }
+
+        if (!supported) {
+          b.vy += 0.18;
+          b.angularVel += (Math.random() - 0.5) * 0.003;
+        }
+      }
+    }
+
+    function updateEnemies() {
+      for (const e of enemies) {
+        if (e.dead) continue;
+
+        e.vy += gravity;
+        e.x += e.vx;
+        e.y += e.vy;
+        e.vx *= 0.985;
+
+        if (e.y + e.r > groundY) {
+          e.y = groundY - e.r;
+          e.vy *= -0.18;
+        }
+
+        // crushed by blocks
+        for (const b of blocks) {
+          if (b.dead) continue;
+          if (circleRectHit(e, b)) {
+            const impact = Math.abs(b.vx) + Math.abs(b.vy) + Math.abs(b.angularVel * 20);
+            if (impact > 2.2) {
+              damageEnemy(e, impact * 10);
+            }
+          }
+        }
+
+        e.blink += 1;
+      }
+    }
+
+    function updateParticles() {
+      for (const p of particles) {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.18;
+        p.life--;
+      }
+      particles = particles.filter(p => p.life > 0);
+    }
+
+    function checkGameState() {
+      const livingEnemies = enemies.filter(e => !e.dead).length;
+
+      if (livingEnemies === 0 && !gameOver) {
+        gameOver = true;
+        score += shotsLeft * 200;
+        updateUI();
+        uiStatus.textContent = "Victory! Scrap-bots destroyed 💥";
+      } else if (shotsLeft === 0 && activeBird && activeBird.settled && livingEnemies > 0 && !gameOver) {
+        gameOver = true;
+        uiStatus.textContent = "Out of shots!";
+      }
+
+      updateUI();
+    }
+
+    function drawBackground() {
+      const sky = ctx.createLinearGradient(0, 0, 0, H);
+      sky.addColorStop(0, "#b8e7ff");
+      sky.addColorStop(1, "#eaf8ff");
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, H);
+
+      // hills
+      ctx.fillStyle = "#9ad18b";
+      ctx.beginPath();
+      ctx.moveTo(0, H);
+      ctx.quadraticCurveTo(W * 0.2, H - 180, W * 0.45, H - 90);
+      ctx.quadraticCurveTo(W * 0.7, H - 180, W, H - 100);
+      ctx.lineTo(W, H);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = "#6fba63";
+      ctx.fillRect(0, groundY, W, H - groundY);
+    }
+
+    function drawSling() {
+      const bird = activeBird && !activeBird.launched ? activeBird : null;
+
+      const leftForkX = sling.x - 18;
+      const rightForkX = sling.x + 18;
+      const forkTopY = sling.y - 42;
+
+      if (bird) {
+        ctx.strokeStyle = "#5e3f24";
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.moveTo(leftForkX, forkTopY);
+        ctx.lineTo(bird.x, bird.y);
+        ctx.lineTo(rightForkX, forkTopY);
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = "#7a4e2d";
+      ctx.lineWidth = 10;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(sling.x - 18, groundY + 10);
+      ctx.lineTo(leftForkX, forkTopY);
+      ctx.moveTo(sling.x + 18, groundY + 10);
+      ctx.lineTo(rightForkX, forkTopY);
+      ctx.stroke();
+    }
+
+    function drawBird(bird) {
+      // trail
+      for (let i = 0; i < bird.trail.length; i++) {
+        const t = bird.trail[i];
+        ctx.globalAlpha = i / bird.trail.length * 0.35;
+        ctx.fillStyle = "#8a5cff";
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      ctx.save();
+      ctx.translate(bird.x, bird.y);
+
+      // body
+      ctx.fillStyle = "#7f56ff";
+      ctx.beginPath();
+      ctx.arc(0, 0, bird.r, 0, Math.PI * 2);
+      ctx.fill();
+
+      // belly
+      ctx.fillStyle = "#c9b4ff";
+      ctx.beginPath();
+      ctx.arc(-3, 4, bird.r * 0.55, 0, Math.PI * 2);
+      ctx.fill();
+
+      // eyes
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      ctx.arc(-6, -5, 5, 0, Math.PI * 2);
+      ctx.arc(5, -5, 5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#111";
+      ctx.beginPath();
+      ctx.arc(-5, -4, 2, 0, Math.PI * 2);
+      ctx.arc(6, -4, 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // ears
+      ctx.fillStyle = "#6a44db";
+      ctx.beginPath();
+      ctx.moveTo(-12, -12);
+      ctx.lineTo(-6, -28);
+      ctx.lineTo(0, -12);
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.moveTo(2, -12);
+      ctx.lineTo(8, -28);
+      ctx.lineTo(14, -12);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawBlock(b) {
+      ctx.save();
+      ctx.translate(b.x, b.y);
+      ctx.rotate(b.angle);
+
+      ctx.fillStyle = b.color;
+      ctx.fillRect(-b.w / 2, -b.h / 2, b.w, b.h);
+
+      if (b.type === "wood") {
+        ctx.strokeStyle = "rgba(70,40,20,0.25)";
+        for (let i = -b.h / 2 + 6; i < b.h / 2; i += 12) {
+          ctx.beginPath();
+          ctx.moveTo(-b.w / 2, i);
+          ctx.lineTo(b.w / 2, i);
+          ctx.stroke();
+        }
+      }
+
+      if (b.type === "glass") {
+        ctx.strokeStyle = "rgba(255,255,255,0.5)";
+        ctx.beginPath();
+        ctx.moveTo(-b.w / 3, -b.h / 2);
+        ctx.lineTo(b.w / 3, b.h / 2);
+        ctx.moveTo(b.w / 4, -b.h / 2);
+        ctx.lineTo(-b.w / 4, b.h / 2);
+        ctx.stroke();
+      }
+
+      if (b.type === "stone") {
+        ctx.strokeStyle = "rgba(255,255,255,0.15)";
+        ctx.strokeRect(-b.w / 2, -b.h / 2, b.w, b.h);
+      }
+
+      // hp cracks
+      const ratio = b.hp / (b.type === "wood" ? 50 : b.type === "glass" ? 22 : 90);
+      if (ratio < 0.55) {
+        ctx.strokeStyle = "rgba(40,40,40,0.45)";
+        ctx.beginPath();
+        ctx.moveTo(-10, -8);
+        ctx.lineTo(4, 1);
+        ctx.lineTo(-6, 11);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
+    function drawEnemy(e) {
+      ctx.save();
+      ctx.translate(e.x, e.y);
+
+      ctx.fillStyle = e.dead ? "#355b35" : "#57d66d";
+      ctx.beginPath();
+      ctx.arc(0, 0, e.r, 0, Math.PI * 2);
+      ctx.fill();
+
+      // metal rim
+      ctx.strokeStyle = "#2d2d2d";
+      ctx.lineWidth = 3;
+      ctx.stroke();
+
+      // eyes
+      const blink = Math.sin(e.blink * 0.08) > 0.96;
+      ctx.fillStyle = "#fff";
+
+      if (!blink) {
+        ctx.beginPath();
+        ctx.arc(-6, -4, 4, 0, Math.PI * 2);
+        ctx.arc(6, -4, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#111";
+        ctx.beginPath();
+        ctx.arc(-5, -3, 1.8, 0, Math.PI * 2);
+        ctx.arc(7, -3, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.strokeStyle = "#111";
+        ctx.beginPath();
+        ctx.moveTo(-10, -4);
+        ctx.lineTo(-2, -4);
+        ctx.moveTo(2, -4);
+        ctx.lineTo(10, -4);
+        ctx.stroke();
+      }
+
+      // mouth
+      ctx.strokeStyle = "#17351d";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 5, 8, 0.1, Math.PI - 0.1);
+      ctx.stroke();
+
+      // hp bar
+      if (!e.dead) {
+        ctx.fillStyle = "rgba(0,0,0,0.25)";
+        ctx.fillRect(-18, -30, 36, 5);
+        ctx.fillStyle = "#ff5c5c";
+        ctx.fillRect(-18, -30, 36 * Math.max(0, e.hp / 60), 5);
+      }
+
+      ctx.restore();
+    }
+
+    function drawParticles() {
+      for (const p of particles) {
+        ctx.globalAlpha = Math.max(0, p.life / 50);
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function render() {
+      drawBackground();
+      drawSling();
+
+      for (const b of blocks) if (!b.dead) drawBlock(b);
+      for (const e of enemies) if (!e.dead) drawEnemy(e);
+      for (const bird of birds) drawBird(bird);
+      drawParticles();
+    }
+
+    function loop() {
+      updateBirds();
+      updateBlocks();
+      updateEnemies();
+      updateParticles();
+      checkGameState();
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    function pointerPos(evt) {
+      const rect = canvas.getBoundingClientRect();
+      if (evt.touches) {
+        return {
+          x: evt.touches[0].clientX - rect.left,
+          y: evt.touches[0].clientY - rect.top
+        };
+      }
+      return {
+        x: evt.clientX - rect.left,
+        y: evt.clientY - rect.top
+      };
+    }
+
+    function onDown(evt) {
+      const p = pointerPos(evt);
+      mouse.x = p.x;
+      mouse.y = p.y;
+      mouse.down = true;
+
+      if (
+        activeBird &&
+        !activeBird.launched &&
+        dist(p.x, p.y, activeBird.x, activeBird.y) < activeBird.r + 8
+      ) {
+        dragging = true;
+      }
+    }
+
+    function onMove(evt) {
+      const p = pointerPos(evt);
+      mouse.x = p.x;
+      mouse.y = p.y;
+
+      if (dragging && activeBird && !activeBird.launched) {
+        const clamped = clampBirdToSling(p.x, p.y);
+        activeBird.x = clamped.x;
+        activeBird.y = clamped.y;
+      }
+    }
+
+    function onUp() {
+      mouse.down = false;
+      if (dragging) {
+        dragging = false;
+        launchBird();
+      }
+    }
+
+    canvas.addEventListener("mousedown", onDown);
+    canvas.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+
+    canvas.addEventListener("touchstart", (e) => { e.preventDefault(); onDown(e); }, { passive: false });
+    canvas.addEventListener("touchmove", (e) => { e.preventDefault(); onMove(e); }, { passive: false });
+    window.addEventListener("touchend", (e) => { e.preventDefault(); onUp(e); }, { passive: false });
+
+    resetBtn.addEventListener("click", resetGame);
+
+    window.addEventListener("resize", () => {
+      W = window.innerWidth;
+      H = window.innerHeight;
+      canvas.width = W;
+      canvas.height = H;
+      resetGame();
+    });
+
+    resetGame();
+    loop();
+  </script>
 </body>
 </html>
